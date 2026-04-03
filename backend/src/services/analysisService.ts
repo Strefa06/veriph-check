@@ -2,6 +2,7 @@ import { trustedPhilippineSources } from "../data/trustedSources.js";
 import { analyzeWithProvider } from "./providerNlpService.js";
 import { mergeClaimedAndExtractedSources, normalizeDomain } from "./sourceExtractionService.js";
 import { enrichClaimWithUrlContext } from "./urlContextService.js";
+import { enrichClaimWithTrustedNews } from "./newsContextService.js";
 
 type AnalyzeInput = {
   type: "text" | "audio" | "video";
@@ -253,9 +254,10 @@ export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
 
 export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<AnalyzeResult> {
   const enrichment = await enrichClaimWithUrlContext(input.content);
+  const newsEnrichment = await enrichClaimWithTrustedNews(input.content);
   const enrichedContent = [input.content, enrichment.appendedText].filter(Boolean).join("\n\n").slice(0, 7000);
   const enrichedSources = mergeClaimedAndExtractedSources(
-    [...(input.claimedSources ?? []), ...enrichment.inferredSources],
+    [...(input.claimedSources ?? []), ...enrichment.inferredSources, ...newsEnrichment.inferredSources],
     enrichedContent
   );
 
@@ -265,12 +267,50 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
     claimedSources: enrichedSources
   });
 
+  const boostedLocal = (() => {
+    if (newsEnrichment.strongestMatchScore < 0.62) {
+      return local;
+    }
+
+    if (local.label === "Fake" && local.riskScore >= 0.7) {
+      return local;
+    }
+
+    const nextConfidence = Math.max(local.confidence, 0.78);
+    const nextRiskScore = Math.min(local.riskScore, 0.33);
+    const nextFake = Math.min(local.fakeNewsLikelihood, 0.26);
+    const nextAi = Math.min(local.aiLikelihood, 0.32);
+
+    return {
+      ...local,
+      label: "Real" as const,
+      mode: "Likely Real" as const,
+      confidence: Number(nextConfidence.toFixed(2)),
+      riskScore: Number(nextRiskScore.toFixed(2)),
+      fakeNewsLikelihood: Number(nextFake.toFixed(2)),
+      aiLikelihood: Number(nextAi.toFixed(2)),
+      humanLikelihood: Number((1 - nextAi).toFixed(2)),
+      explanation:
+        local.explanation +
+        " Trusted PH news feed matching found similar headlines, increasing confidence for a likely real claim.",
+      sourceVerification: {
+        ...local.sourceVerification,
+        matchedTrustedSources: Array.from(
+          new Set([...local.sourceVerification.matchedTrustedSources, ...newsEnrichment.inferredSources])
+        ),
+        checkedSources: Array.from(
+          new Set([...local.sourceVerification.checkedSources, ...newsEnrichment.inferredSources])
+        )
+      }
+    };
+  })();
+
   try {
     const provider = await analyzeWithProvider(enrichedContent, input.type, enrichedSources);
     if (!provider) {
       return {
-        ...local,
-        notes: [...enrichment.notes, ...local.notes]
+        ...boostedLocal,
+        notes: [...newsEnrichment.notes, ...enrichment.notes, ...boostedLocal.notes]
       };
     }
 
@@ -282,22 +322,23 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
           : "Uncertain";
 
     const localStrongReal =
-      local.label === "Real" &&
-      local.sourceVerification.trustedMatchPercent >= 50 &&
-      local.riskScore <= 0.38;
+      boostedLocal.label === "Real" &&
+      boostedLocal.sourceVerification.trustedMatchPercent >= 50 &&
+      boostedLocal.riskScore <= 0.38;
 
     if (localStrongReal && provider.label !== "Real" && provider.confidence < 0.75) {
       return {
-        ...local,
+        ...boostedLocal,
         notes: [
           "Provider output conflicted with strong trusted-source signals; local trusted-source decision retained.",
-          ...local.notes
+          ...newsEnrichment.notes,
+          ...boostedLocal.notes
         ]
       };
     }
 
     return {
-      ...local,
+      ...boostedLocal,
       label: provider.label,
       mode,
       confidence: Number(Math.max(provider.confidence, localStrongReal && provider.label === "Real" ? 0.78 : 0).toFixed(2)),
@@ -306,15 +347,16 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
       humanLikelihood: Number((1 - provider.aiLikelihood).toFixed(2)),
       explanation: provider.explanation,
       notes: [
+        ...newsEnrichment.notes,
         ...enrichment.notes,
         `Primary inference provider: ${provider.provider}`,
-        ...local.notes
+        ...boostedLocal.notes
       ]
     };
   } catch {
     return {
-      ...local,
-      notes: [...enrichment.notes, ...local.notes]
+      ...boostedLocal,
+      notes: [...newsEnrichment.notes, ...enrichment.notes, ...boostedLocal.notes]
     };
   }
 }

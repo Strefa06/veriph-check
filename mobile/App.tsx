@@ -639,10 +639,23 @@ function ReAIlizeApp() {
           </View>
 
           <Text style={[styles.label, { color: colors.text }]}>Manual mode input (online AI required)</Text>
+          <Text style={[styles.subtitle, { color: colors.textSecondary, marginBottom: 8 }]}> 
+            {mode === "text"
+              ? "Paste the claim/headline/body text."
+              : mode === "audio"
+                ? "For audio mode, paste a transcript or use Start Live Session for realtime speech capture."
+                : "For video mode, paste a caption/transcript or use Start Live Session for realtime OCR + speech capture."}
+          </Text>
           <TextInput
             value={content}
             onChangeText={setContent}
-            placeholder="Paste transcript, caption, claim, or summary"
+            placeholder={
+              mode === "text"
+                ? "Paste claim/headline/body text"
+                : mode === "audio"
+                  ? "Paste audio transcript (or use live mode)"
+                  : "Paste video caption/transcript (or use live mode)"
+            }
             multiline
             style={[
               styles.inputLarge,

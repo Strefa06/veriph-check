@@ -1,18 +1,38 @@
 import { trustedPhilippineSources } from "../data/trustedSources.js";
 import { normalizeDomain } from "./sourceExtractionService.js";
 
-type HeadlineMatch = {
+type MatchProvider = "newsapi" | "gnews" | "rss";
+
+type RawNewsItem = {
   title: string;
-  link: string;
+  url: string;
+  sourceName: string;
+  timestamp?: string;
+  provider: MatchProvider;
+};
+
+export type NewsMatch = {
+  headline: string;
+  sourceName: string;
+  url: string;
+  timestamp?: string;
   domain: string;
-  score: number;
-  pubDate?: string;
+  provider: MatchProvider;
+  similarity: number;
+  trusted: boolean;
+  reliability: number;
 };
 
 export type NewsContextEnrichment = {
+  matchedSources: NewsMatch[];
+  rssMatches: NewsMatch[];
   inferredSources: string[];
   matchedHeadlines: string[];
   matchedLinks: string[];
+  trustScore: number;
+  explanation: string;
+  usedPrimaryApis: boolean;
+  primaryApiErrors: string[];
   notes: string[];
   strongestMatchScore: number;
 };
@@ -21,16 +41,10 @@ const GOOGLE_NEWS_RSS_BASE = "https://news.google.com/rss/search";
 const NEWSAPI_BASE = "https://newsapi.org/v2/everything";
 const GNEWS_BASE = "https://gnews.io/api/v4/search";
 const FETCH_TIMEOUT_MS = 3200;
-const MAX_ITEMS = 24;
-const MIN_MATCH_SCORE_STRONG = 0.56;
-const MIN_MATCH_SCORE_WEAK = 0.4;
+const MAX_ITEMS = 30;
+const MIN_MATCH_SCORE_STRONG = 0.5;
+const MIN_MATCH_SCORE_WEAK = 0.35;
 const MIN_MATCH_SCORE_PARTIAL = 0.3;
-
-type NewsItem = {
-  title: string;
-  link: string;
-  pubDate?: string;
-};
 
 function decodeEntities(value: string): string {
   return value
@@ -41,6 +55,10 @@ function decodeEntities(value: string): string {
     .replace(/&gt;/g, ">")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeText(value: string): string {
@@ -105,9 +123,9 @@ function jaccardSimilarity(left: string, right: string): number {
   return union ? intersection / union : 0;
 }
 
-function extractItems(rss: string): Array<{ title: string; link: string; pubDate?: string }> {
+function extractItems(rss: string): RawNewsItem[] {
   const itemRegex = /<item>([\s\S]*?)<\/item>/gi;
-  const items: Array<{ title: string; link: string; pubDate?: string }> = [];
+  const items: RawNewsItem[] = [];
   let match: RegExpExecArray | null;
 
   while ((match = itemRegex.exec(rss)) !== null && items.length < MAX_ITEMS) {
@@ -115,16 +133,32 @@ function extractItems(rss: string): Array<{ title: string; link: string; pubDate
     const titleMatch = block.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>|<title>([\s\S]*?)<\/title>/i);
     const linkMatch = block.match(/<link>([\s\S]*?)<\/link>/i);
     const pubDateMatch = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/i);
+    const sourceNameMatch = block.match(/<source[^>]*>([\s\S]*?)<\/source>/i);
+    const sourceUrlMatch = block.match(/<source[^>]*url=["']([^"']+)["'][^>]*>/i);
 
     const title = decodeEntities((titleMatch?.[1] || titleMatch?.[2] || "").trim());
     const link = decodeEntities((linkMatch?.[1] || "").trim());
+    const sourceName = decodeEntities((sourceNameMatch?.[1] || "").trim());
+    const sourceUrl = decodeEntities((sourceUrlMatch?.[1] || "").trim());
 
     if (!title || !link) continue;
 
+    let normalizedSourceName = sourceName;
+    if (!normalizedSourceName && title.includes(" - ")) {
+      const maybeSource = title.split(" - ").pop() || "";
+      if (maybeSource && maybeSource.length <= 40) {
+        normalizedSourceName = maybeSource;
+      }
+    }
+
+    const resolvedUrl = sourceUrl || link;
+
     items.push({
       title,
-      link,
-      pubDate: pubDateMatch?.[1] ? decodeEntities(pubDateMatch[1].trim()) : undefined
+      url: resolvedUrl,
+      sourceName: normalizedSourceName || normalizeDomain(resolvedUrl),
+      timestamp: pubDateMatch?.[1] ? decodeEntities(pubDateMatch[1].trim()) : undefined,
+      provider: "rss"
     });
   }
 
@@ -136,9 +170,9 @@ function buildSearchQuery(claim: string): string {
   return top || claim.slice(0, 120);
 }
 
-function isTrustedDomain(domain: string): boolean {
+function getTrustedSourceByDomain(domain: string) {
   const normalized = normalizeDomain(domain);
-  return trustedPhilippineSources.some(
+  return trustedPhilippineSources.find(
     (source) => normalized === source.domain || normalized.endsWith(`.${source.domain}`)
   );
 }
@@ -190,9 +224,11 @@ async function fetchJson(url: string, headers?: Record<string, string>): Promise
   }
 }
 
-async function fetchNewsApiItems(query: string): Promise<NewsItem[]> {
+async function fetchNewsApiItems(query: string): Promise<{ items: RawNewsItem[]; error?: string }> {
   const apiKey = process.env.NEWSAPI_KEY;
-  if (!apiKey) return [];
+  if (!apiKey) {
+    return { items: [], error: "NEWSAPI_KEY missing" };
+  }
 
   const url = `${NEWSAPI_BASE}?q=${encodeURIComponent(query)}&language=en&pageSize=20&sortBy=publishedAt&searchIn=title,description`;
   const data = (await fetchJson(url, { "X-Api-Key": apiKey })) as
@@ -202,39 +238,124 @@ async function fetchNewsApiItems(query: string): Promise<NewsItem[]> {
       }
     | null;
 
-  if (!data || data.status !== "ok" || !Array.isArray(data.articles)) return [];
+  if (!data || data.status !== "ok" || !Array.isArray(data.articles)) {
+    return { items: [], error: "NewsAPI request failed" };
+  }
 
-  return data.articles
+  const items = data.articles
     .map((article) => ({
       title: decodeEntities((article.title || "").trim()),
-      link: decodeEntities((article.url || "").trim()),
-      pubDate: article.publishedAt
+      url: decodeEntities((article.url || "").trim()),
+      sourceName: normalizeDomain(decodeEntities((article.url || "").trim())),
+      timestamp: article.publishedAt,
+      provider: "newsapi" as const
     }))
-    .filter((item) => item.title && item.link)
+    .filter((item) => item.title && item.url)
     .slice(0, MAX_ITEMS);
+
+  return { items };
 }
 
-async function fetchGNewsItems(query: string): Promise<NewsItem[]> {
+async function fetchGNewsItems(query: string): Promise<{ items: RawNewsItem[]; error?: string }> {
   const apiKey = process.env.GNEWS_API_KEY;
-  if (!apiKey) return [];
+  if (!apiKey) {
+    return { items: [], error: "GNEWS_API_KEY missing" };
+  }
 
   const url = `${GNEWS_BASE}?q=${encodeURIComponent(query)}&lang=en&country=ph&max=20&token=${encodeURIComponent(apiKey)}`;
   const data = (await fetchJson(url)) as
     | {
-        articles?: Array<{ title?: string; url?: string; publishedAt?: string }>;
+        articles?: Array<{
+          title?: string;
+          url?: string;
+          publishedAt?: string;
+          source?: { name?: string; url?: string };
+        }>;
       }
     | null;
 
-  if (!data || !Array.isArray(data.articles)) return [];
+  if (!data || !Array.isArray(data.articles)) {
+    return { items: [], error: "GNews request failed" };
+  }
 
-  return data.articles
+  const items = data.articles
     .map((article) => ({
       title: decodeEntities((article.title || "").trim()),
-      link: decodeEntities((article.url || "").trim()),
-      pubDate: article.publishedAt
+      url: decodeEntities((article.url || "").trim()),
+      sourceName: decodeEntities((article.source?.name || "").trim()) || normalizeDomain(article.source?.url || article.url || ""),
+      timestamp: article.publishedAt,
+      provider: "gnews" as const
     }))
-    .filter((item) => item.title && item.link)
+    .filter((item) => item.title && item.url)
     .slice(0, MAX_ITEMS);
+
+  return { items };
+}
+
+function recencyScore(timestamp?: string): number {
+  if (!timestamp) return 0.45;
+  const t = Date.parse(timestamp);
+  if (Number.isNaN(t)) return 0.45;
+
+  const diffHours = Math.max(0, (Date.now() - t) / (1000 * 60 * 60));
+  if (diffHours <= 24) return 1;
+  if (diffHours <= 72) return 0.85;
+  if (diffHours <= 24 * 7) return 0.7;
+  if (diffHours <= 24 * 30) return 0.5;
+  return 0.3;
+}
+
+function computeTrustScore(matches: NewsMatch[]): number {
+  if (!matches.length) return 0;
+
+  const trustedCount = matches.filter((item) => item.trusted).length;
+  const trustedRatio = trustedCount / matches.length;
+  const avgReliability =
+    matches.reduce((sum, item) => sum + item.reliability / 100, 0) / matches.length;
+  const avgRecency =
+    matches.reduce((sum, item) => sum + recencyScore(item.timestamp), 0) / matches.length;
+
+  const blended = trustedRatio * 0.45 + avgReliability * 0.35 + avgRecency * 0.2;
+  return Math.round(Math.max(0, Math.min(1, blended)) * 100);
+}
+
+function buildTrustExplanation(trustScore: number, strongest: number, matches: NewsMatch[]): string {
+  if (!matches.length) {
+    return "No strong matching PH news records were found from APIs/RSS for this text claim.";
+  }
+
+  if (trustScore >= 70 && strongest >= MIN_MATCH_SCORE_WEAK) {
+    return "Claim is likely real because it aligns with recent trusted PH news matches with strong source reliability.";
+  }
+  if (trustScore >= 45 && strongest >= MIN_MATCH_SCORE_PARTIAL) {
+    return "Claim is uncertain: there are partial matches in PH news sources, but evidence is not strong enough for high confidence.";
+  }
+  return "Claim is uncertain or potentially misleading due to weak trusted-source alignment and low news match confidence.";
+}
+
+function mapToNewsMatches(items: RawNewsItem[], claim: string): NewsMatch[] {
+  const matches: NewsMatch[] = [];
+
+  for (const item of items) {
+    const domain = normalizeDomain(item.url);
+    const trusted = getTrustedSourceByDomain(domain);
+    const similarity = jaccardSimilarity(claim, item.title);
+    if (similarity < MIN_MATCH_SCORE_PARTIAL) continue;
+
+    matches.push({
+      headline: item.title,
+      sourceName: item.sourceName || (trusted?.name ?? domain),
+      url: item.url,
+      timestamp: item.timestamp,
+      domain,
+      provider: item.provider,
+      similarity: Number(similarity.toFixed(3)),
+      trusted: Boolean(trusted),
+      reliability: Math.round((trusted?.trustWeight ?? 0.45) * 100)
+    });
+  }
+
+  return matches.sort((a, b) => b.similarity - a.similarity).slice(0, 6);
 }
 
 function toAgeNote(pubDate?: string): string {
@@ -253,33 +374,64 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
   const trimmed = claim.trim();
   if (trimmed.length < 20) {
     return {
+      matchedSources: [],
+      rssMatches: [],
       inferredSources: [],
       matchedHeadlines: [],
       matchedLinks: [],
+      trustScore: 0,
+      explanation: "Claim is too short for reliable external news matching.",
+      usedPrimaryApis: false,
+      primaryApiErrors: [],
       notes: [],
       strongestMatchScore: 0
     };
   }
 
   const query = buildSearchQuery(trimmed);
+
+  const hasPrimaryKeys = Boolean(process.env.NEWSAPI_KEY || process.env.GNEWS_API_KEY);
+  let usedPrimaryApis = false;
+  const primaryApiErrors: string[] = [];
+  let primaryItems: RawNewsItem[] = [];
+
+  if (hasPrimaryKeys) {
+    const [newsApiResult, gnewsResult] = await Promise.all([
+      fetchNewsApiItems(query),
+      fetchGNewsItems(query)
+    ]);
+
+    if (newsApiResult.error && newsApiResult.error !== "NEWSAPI_KEY missing") {
+      primaryApiErrors.push(newsApiResult.error);
+    }
+    if (gnewsResult.error && gnewsResult.error !== "GNEWS_API_KEY missing") {
+      primaryApiErrors.push(gnewsResult.error);
+    }
+
+    primaryItems = [...newsApiResult.items, ...gnewsResult.items];
+    usedPrimaryApis = primaryItems.length > 0;
+  }
+
+  let rssItems: RawNewsItem[] = [];
   const rssUrl = `${GOOGLE_NEWS_RSS_BASE}?q=${encodeURIComponent(query)}&hl=en-PH&gl=PH&ceid=PH:en`;
-  const [rss, newsApiItems, gnewsItems] = await Promise.all([
-    fetchRss(rssUrl),
-    fetchNewsApiItems(query),
-    fetchGNewsItems(query)
-  ]);
+  if (!usedPrimaryApis) {
+    const rss = await fetchRss(rssUrl);
+    rssItems = rss ? extractItems(rss) : [];
+  }
 
-  const items = [
-    ...(rss ? extractItems(rss) : []),
-    ...newsApiItems,
-    ...gnewsItems
-  ];
+  const selectedItems = usedPrimaryApis ? primaryItems : rssItems;
 
-  if (!items.length) {
+  if (!selectedItems.length) {
     return {
+      matchedSources: [],
+      rssMatches: [],
       inferredSources: [],
       matchedHeadlines: [],
       matchedLinks: [],
+      trustScore: 0,
+      explanation: "No usable results from primary news APIs or RSS fallback.",
+      usedPrimaryApis,
+      primaryApiErrors,
       notes: [],
       strongestMatchScore: 0
     };
@@ -287,45 +439,29 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
 
   const dedupedItems = Array.from(
     new Map(
-      items.map((item) => {
-        const domain = normalizeDomain(item.link);
+      selectedItems.map((item) => {
+        const domain = normalizeDomain(item.url);
         return [`${normalizeText(item.title)}|${domain}`, item];
       })
     ).values()
   );
-  const candidates: HeadlineMatch[] = [];
-
-  for (const item of dedupedItems) {
-    const domain = normalizeDomain(item.link);
-    if (!isTrustedDomain(domain)) continue;
-
-    const score = jaccardSimilarity(trimmed, item.title);
-    if (score >= MIN_MATCH_SCORE_PARTIAL) {
-      candidates.push({
-        title: item.title,
-        link: item.link,
-        domain,
-        score,
-        pubDate: item.pubDate
-      });
-    }
-  }
-
-  candidates.sort((a, b) => b.score - a.score);
-
-  const top = candidates.slice(0, 5);
+  const matches = mapToNewsMatches(dedupedItems, trimmed);
+  const strongest = matches[0]?.similarity ?? 0;
+  const matchedSources = matches;
+  const rssMatches = matches.filter((item) => item.provider === "rss");
   const inferredSources = Array.from(
-    new Set(top.filter((item) => item.score >= MIN_MATCH_SCORE_WEAK).map((item) => item.domain))
+    new Set(matches.filter((item) => item.similarity >= MIN_MATCH_SCORE_WEAK).map((item) => item.domain))
   );
-  const matchedHeadlines = top.slice(0, 3).map((item) => item.title);
-  const matchedLinks = top.slice(0, 3).map((item) => item.link);
-  const strongest = top[0]?.score ?? 0;
+  const matchedHeadlines = matches.slice(0, 3).map((item) => item.headline);
+  const matchedLinks = matches.slice(0, 3).map((item) => item.url);
+  const trustScore = computeTrustScore(matches);
+  const explanation = buildTrustExplanation(trustScore, strongest, matches);
 
   const notes: string[] = [];
-  if (top.length > 0) {
+  if (matches.length > 0) {
     if (strongest >= MIN_MATCH_SCORE_STRONG) {
       notes.push(
-        `Matched ${top.length} trusted-source headline(s) from PH news feeds (best similarity ${(strongest * 100).toFixed(0)}%).`
+        `Matched ${matches.length} PH news headline(s) (best similarity ${(strongest * 100).toFixed(0)}%).`
       );
     } else if (strongest >= MIN_MATCH_SCORE_WEAK) {
       notes.push(
@@ -336,19 +472,31 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
         `Weak trusted-source lexical overlap detected from PH feeds (best similarity ${(strongest * 100).toFixed(0)}%).`
       );
     }
-    if (process.env.NEWSAPI_KEY || process.env.GNEWS_API_KEY) {
-      notes.push("Optional external news APIs are enabled for broader PH coverage.");
+    if (usedPrimaryApis) {
+      notes.push("Primary news APIs (NewsAPI/GNews) were used before RSS fallback.");
+    } else {
+      notes.push("Used Google News RSS fallback for PH filtering.");
     }
-    const ageNote = toAgeNote(top[0].pubDate);
+    const ageNote = toAgeNote(matches[0].timestamp);
     if (ageNote) {
       notes.push(ageNote);
     }
   }
 
+  if (primaryApiErrors.length) {
+    notes.push(`Primary API warnings: ${primaryApiErrors.join("; ")}`);
+  }
+
   return {
+    matchedSources,
+    rssMatches,
     inferredSources,
     matchedHeadlines,
     matchedLinks,
+    trustScore,
+    explanation,
+    usedPrimaryApis,
+    primaryApiErrors,
     notes,
     strongestMatchScore: strongest
   };

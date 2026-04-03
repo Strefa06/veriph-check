@@ -1,12 +1,12 @@
 import { trustedPhilippineSources } from "../data/trustedSources.js";
 import { analyzeWithProvider } from "./providerNlpService.js";
+import { NewsMatch, enrichClaimWithTrustedNews } from "./newsContextService.js";
 import {
   mapDomainsToTrustedSourceNames,
   mergeClaimedAndExtractedSources,
   normalizeDomain
 } from "./sourceExtractionService.js";
 import { enrichClaimWithUrlContext } from "./urlContextService.js";
-import { enrichClaimWithTrustedNews } from "./newsContextService.js";
 
 type AnalyzeInput = {
   type: "text" | "audio" | "video";
@@ -39,6 +39,10 @@ export type AnalyzeResult = {
   };
   evidence: Evidence[];
   notes: string[];
+  matchedSources: NewsMatch[];
+  rssMatches: NewsMatch[];
+  trustScore: number;
+  newsExplanation: string;
 };
 
 const suspiciousPhrases = [
@@ -252,7 +256,11 @@ export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
       verifiedAgainstCatalog: Array.from(new Set(trustedPhilippineSources.map((source) => source.name)))
     },
     evidence,
-    notes
+    notes,
+    matchedSources: [],
+    rssMatches: [],
+    trustScore: 0,
+    newsExplanation: "No external news matching applied yet."
   };
 }
 
@@ -284,7 +292,11 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
       ...local.sourceVerification,
       checkedSources: mergedCheckedSources,
       matchedTrustedSources: mergedTrustedNames
-    }
+    },
+    matchedSources: newsEnrichment.matchedSources,
+    rssMatches: newsEnrichment.rssMatches,
+    trustScore: newsEnrichment.trustScore,
+    newsExplanation: newsEnrichment.explanation
   };
 
   const newsMatchNotes = [
@@ -296,7 +308,7 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
   ];
 
   const boostedLocal = (() => {
-    if (newsEnrichment.strongestMatchScore < 0.5) {
+    if (newsEnrichment.trustScore < 60 || newsEnrichment.strongestMatchScore < 0.45) {
       return baseWithNews;
     }
 
@@ -342,7 +354,7 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
 
     const localStrongReal =
       boostedLocal.label === "Real" &&
-      boostedLocal.sourceVerification.trustedMatchPercent >= 50 &&
+      (boostedLocal.sourceVerification.trustedMatchPercent >= 50 || boostedLocal.trustScore >= 70) &&
       boostedLocal.riskScore <= 0.38;
 
     if (localStrongReal && provider.label !== "Real" && provider.confidence < 0.75) {

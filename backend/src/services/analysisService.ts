@@ -44,6 +44,18 @@ const suspiciousPhrases = [
   "guaranteed"
 ];
 
+const deathClaimVerbs = ["patay", "namatay", "pumanaw", "dead", "died", "passed away"];
+const prominentPeople = [
+  "duterte",
+  "digong",
+  "rodrigo duterte",
+  "marcos",
+  "bbm",
+  "leni",
+  "robredo",
+  "sara duterte"
+];
+
 function clamp(num: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, num));
 }
@@ -64,6 +76,12 @@ function scoreContentRisk(content: string): number {
 
   if ((content.match(/!/g) || []).length > 3) {
     score += 0.1;
+  }
+
+  const mentionsDeathClaim = deathClaimVerbs.some((verb) => lower.includes(verb));
+  const mentionsProminentPerson = prominentPeople.some((name) => lower.includes(name));
+  if (mentionsDeathClaim && mentionsProminentPerson) {
+    score += 0.38;
   }
 
   return clamp(score, 0, 1);
@@ -128,6 +146,7 @@ function evaluateSources(claimedSources: string[]): {
 
 export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
   const consolidatedSources = mergeClaimedAndExtractedSources(input.claimedSources ?? [], input.content);
+  const lowerContent = input.content.toLowerCase();
   const contentRisk = scoreContentRisk(input.content);
   const { evidence, sourceRisk, trustedMatchPercent, matchedTrustedSources } = evaluateSources(
     consolidatedSources
@@ -141,17 +160,33 @@ export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
     modalityRisk = 0.42;
   }
 
-  const riskScore = clamp(contentRisk * 0.45 + sourceRisk * 0.4 + modalityRisk * 0.15, 0, 1);
+  let riskScore = clamp(contentRisk * 0.45 + sourceRisk * 0.4 + modalityRisk * 0.15, 0, 1);
+  const hasDeathClaim = deathClaimVerbs.some((verb) => lowerContent.includes(verb));
+  const hasProminentPerson = prominentPeople.some((name) => lowerContent.includes(name));
+  const deathHoaxPattern = hasDeathClaim && hasProminentPerson;
+  if (deathHoaxPattern && trustedMatchPercent < 40) {
+    riskScore = Math.max(riskScore, 0.8);
+  }
+
   const confidence = clamp(1 - riskScore, 0, 1);
-  const aiLikelihood = clamp(riskScore * 0.88 + modalityRisk * 0.12, 0, 1);
-  const fakeNewsLikelihood = clamp(riskScore * 0.82 + (1 - trustedMatchPercent / 100) * 0.18, 0, 1);
+  let aiLikelihood = clamp(riskScore * 0.88 + modalityRisk * 0.12, 0, 1);
+  let fakeNewsLikelihood = clamp(riskScore * 0.82 + (1 - trustedMatchPercent / 100) * 0.18, 0, 1);
+  if (deathHoaxPattern && trustedMatchPercent < 40) {
+    fakeNewsLikelihood = Math.max(fakeNewsLikelihood, 0.9);
+    aiLikelihood = Math.min(aiLikelihood, 0.45);
+  }
   const humanLikelihood = clamp(1 - aiLikelihood, 0, 1);
 
   let label: AnalyzeResult["label"] = "Real";
   let mode: AnalyzeResult["mode"] = "Uncertain";
   let explanation = "";
 
-  if (riskScore <= 0.35) {
+  if (deathHoaxPattern && trustedMatchPercent < 40) {
+    label = "Fake";
+    mode = "Likely Misleading";
+    explanation =
+      "High-risk claim detected: a public-figure death statement without credible source backing. Treat as likely fake until verified by official outlets.";
+  } else if (riskScore <= 0.35) {
     label = "Real";
     mode = "Likely Real";
     if (trustedMatchPercent > 60) {

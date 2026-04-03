@@ -84,6 +84,32 @@ function textSimilarity(a: string, b: string): number {
   return Math.max(0, 1 - distance / maxLen);
 }
 
+function tokenizeForNovelty(text: string): Set<string> {
+  return new Set(
+    normalizeForCompare(text)
+      .split(" ")
+      .map((part) => part.trim())
+      .filter((part) => part.length >= 4)
+  );
+}
+
+function hasMeaningfulNewText(nextText: string, previousText: string): boolean {
+  if (!previousText.trim()) return true;
+
+  const nextTokens = tokenizeForNovelty(nextText);
+  const previousTokens = tokenizeForNovelty(previousText);
+  if (!nextTokens.size) return false;
+
+  let newTokenCount = 0;
+  nextTokens.forEach((token) => {
+    if (!previousTokens.has(token)) {
+      newTokenCount += 1;
+    }
+  });
+
+  return newTokenCount >= 3;
+}
+
 async function probeInternet(timeoutMs = 2600): Promise<boolean> {
   try {
     const timeoutResult = await Promise.race([
@@ -406,7 +432,9 @@ function ReAIlizeApp() {
     }
 
     const normalized = `[${newest.source}] ${mergedText}`;
-    if (textSimilarity(normalized, lastSentChunkRef.current) > 0.9) {
+    const similarityScore = textSimilarity(normalized, lastSentChunkRef.current);
+    const hasNewInfo = hasMeaningfulNewText(normalized, lastSentChunkRef.current);
+    if (similarityScore > 0.9 && !hasNewInfo) {
       return;
     }
     lastSentChunkRef.current = normalized;
@@ -467,7 +495,7 @@ function ReAIlizeApp() {
         void sendDetectedBatch(queued).catch((err: unknown) => {
           setError(err instanceof Error ? err.message : "Live detection chunk failed");
         });
-      }, 1200),
+      }, 700),
     [sessionId, mode]
   );
 

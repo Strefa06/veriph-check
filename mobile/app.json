@@ -23,6 +23,7 @@
       "expo-asset"
     ],
     "extra": {
+      "apiBaseUrl": "https://veriph-check-backend.onrender.com/api",
       "eas": {
         "projectId": "91575494-dc34-46eb-844a-9ce2f204c3d5"
       }

@@ -683,7 +683,7 @@ class RealizeOverlayService : Service(), RecognitionListener {
     if (!detectionActive) return
 
     val now = System.currentTimeMillis()
-    if (now - lastOcrAt < 1400) {
+    if (now - lastOcrAt < 850) {
       reader.acquireLatestImage()?.close()
       return
     }
@@ -750,7 +750,7 @@ class RealizeOverlayService : Service(), RecognitionListener {
     val previous = if (source == "audio") lastSpeechText else lastScreenText
     val similarityScore = similarity(comparable, previous)
 
-    if (comparable == previous || similarityScore >= 0.9) {
+    if (comparable == previous || similarityScore >= 0.94) {
       if (source == "audio") {
         repeatedSpeechCount += 1
         if (repeatedSpeechCount >= 3) {
@@ -769,13 +769,13 @@ class RealizeOverlayService : Service(), RecognitionListener {
     }
 
     if (source == "audio") {
-      if (now - lastSpeechEmitAt < 1800 && similarityScore > 0.7) return
+      if (now - lastSpeechEmitAt < 1200 && similarityScore > 0.82) return
       repeatedSpeechCount = 0
       lastSpeechText = comparable
       lastSpeechEmitAt = now
       lastSpeechDetectedAt = now
     } else {
-      if (now - lastScreenEmitAt < 1100 && similarityScore > 0.75) return
+      if (now - lastScreenEmitAt < 700 && similarityScore > 0.88) return
       repeatedScreenCount = 0
       lastScreenText = comparable
       lastScreenEmitAt = now

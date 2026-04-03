@@ -16,6 +16,18 @@ const suspiciousPhrases = [
   "breaking"
 ];
 
+const deathClaimVerbs = ["patay", "namatay", "pumanaw", "dead", "died", "passed away"];
+const prominentPeople = [
+  "duterte",
+  "digong",
+  "rodrigo duterte",
+  "marcos",
+  "bbm",
+  "leni",
+  "robredo",
+  "sara duterte"
+];
+
 const trustedDomains = [
   "gov.ph",
   "dost.gov.ph",
@@ -51,6 +63,10 @@ function scoreLanguageRisk(content: string): number {
 
   if (content.length > 220 && !/[0-9]/.test(content)) score += 0.07;
 
+  const mentionsDeathClaim = deathClaimVerbs.some((verb) => lower.includes(verb));
+  const mentionsProminentPerson = prominentPeople.some((name) => lower.includes(name));
+  if (mentionsDeathClaim && mentionsProminentPerson) score += 0.38;
+
   return clamp(score, 0, 1);
 }
 
@@ -84,6 +100,7 @@ function scoreSourceTrust(claimedSources: string[]): {
 
 export function analyzeOfflineClaim(input: OfflineAnalyzeInput): AnalyzeResponse {
   const claimedSources = input.claimedSources ?? [];
+  const lowerContent = input.content.toLowerCase();
   const languageRisk = scoreLanguageRisk(input.content);
   const { trustedMatchPercent, matchedTrustedSources, sourceRisk } = scoreSourceTrust(claimedSources);
 
@@ -91,17 +108,33 @@ export function analyzeOfflineClaim(input: OfflineAnalyzeInput): AnalyzeResponse
   if (input.type === "audio") modalityRisk = 0.35;
   if (input.type === "video") modalityRisk = 0.42;
 
-  const riskScore = clamp(languageRisk * 0.48 + sourceRisk * 0.37 + modalityRisk * 0.15, 0, 1);
+  let riskScore = clamp(languageRisk * 0.48 + sourceRisk * 0.37 + modalityRisk * 0.15, 0, 1);
+  const deathHoaxPattern =
+    deathClaimVerbs.some((verb) => lowerContent.includes(verb)) &&
+    prominentPeople.some((name) => lowerContent.includes(name));
+  if (deathHoaxPattern && trustedMatchPercent < 40) {
+    riskScore = Math.max(riskScore, 0.8);
+  }
+
   const confidence = clamp(1 - riskScore, 0, 1);
-  const aiLikelihood = clamp(riskScore * 0.86 + modalityRisk * 0.14, 0, 1);
-  const fakeNewsLikelihood = clamp(riskScore * 0.8 + sourceRisk * 0.2, 0, 1);
+  let aiLikelihood = clamp(riskScore * 0.86 + modalityRisk * 0.14, 0, 1);
+  let fakeNewsLikelihood = clamp(riskScore * 0.8 + sourceRisk * 0.2, 0, 1);
+  if (deathHoaxPattern && trustedMatchPercent < 40) {
+    fakeNewsLikelihood = Math.max(fakeNewsLikelihood, 0.9);
+    aiLikelihood = Math.min(aiLikelihood, 0.45);
+  }
   const humanLikelihood = clamp(1 - aiLikelihood, 0, 1);
 
   let label: AnalyzeResponse["label"] = "Real";
   let mode: AnalyzeResponse["mode"] = "Uncertain";
   let explanation = "Offline heuristic analysis only; connect to internet for higher-confidence scoring.";
 
-  if (riskScore <= 0.35) {
+  if (deathHoaxPattern && trustedMatchPercent < 40) {
+    label = "Fake";
+    mode = "Likely Misleading";
+    explanation =
+      "Offline heuristic flagged an unsupported public-figure death claim as likely fake. Verify with official sources before sharing.";
+  } else if (riskScore <= 0.35) {
     label = "Real";
     mode = "Likely Real";
     explanation = "Offline heuristic found low-risk language patterns and acceptable source signals.";

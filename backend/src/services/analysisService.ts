@@ -164,6 +164,11 @@ export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
   const hasDeathClaim = deathClaimVerbs.some((verb) => lowerContent.includes(verb));
   const hasProminentPerson = prominentPeople.some((name) => lowerContent.includes(name));
   const deathHoaxPattern = hasDeathClaim && hasProminentPerson;
+  const hasStrongTrustedCoverage = trustedMatchPercent >= 50;
+  const lowManipulationRisk = contentRisk <= 0.42;
+  if (hasStrongTrustedCoverage && lowManipulationRisk && !deathHoaxPattern) {
+    riskScore = Math.min(riskScore, 0.32);
+  }
   if (deathHoaxPattern && trustedMatchPercent < 40) {
     riskScore = Math.max(riskScore, 0.8);
   }
@@ -262,11 +267,26 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
           ? "Likely Misleading"
           : "Uncertain";
 
+    const localStrongReal =
+      local.label === "Real" &&
+      local.sourceVerification.trustedMatchPercent >= 50 &&
+      local.riskScore <= 0.38;
+
+    if (localStrongReal && provider.label !== "Real" && provider.confidence < 0.75) {
+      return {
+        ...local,
+        notes: [
+          "Provider output conflicted with strong trusted-source signals; local trusted-source decision retained.",
+          ...local.notes
+        ]
+      };
+    }
+
     return {
       ...local,
       label: provider.label,
       mode,
-      confidence: Number(provider.confidence.toFixed(2)),
+      confidence: Number(Math.max(provider.confidence, localStrongReal && provider.label === "Real" ? 0.78 : 0).toFixed(2)),
       aiLikelihood: Number(provider.aiLikelihood.toFixed(2)),
       fakeNewsLikelihood: Number(provider.fakeNewsLikelihood.toFixed(2)),
       humanLikelihood: Number((1 - provider.aiLikelihood).toFixed(2)),

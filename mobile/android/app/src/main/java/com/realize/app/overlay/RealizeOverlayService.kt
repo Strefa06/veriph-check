@@ -138,6 +138,20 @@ class RealizeOverlayService : Service(), RecognitionListener {
   private val mainHandler = Handler(Looper.getMainLooper())
 
   private val ignoredUiTokens = setOf(
+    "reailize",
+    "real-time ai and fake news detection",
+    "manual mode input",
+    "analyze manual input",
+    "realtime overlay mode",
+    "start live session",
+    "stop live session",
+    "latest detection",
+    "using offline detection",
+    "waiting for analysis",
+    "likely real",
+    "likely misleading",
+    "uncertain",
+    "chunks",
     "like",
     "share",
     "comment",
@@ -625,18 +639,26 @@ class RealizeOverlayService : Service(), RecognitionListener {
 
   private fun filterOcrText(rawText: String): String {
     val uniqueLines = LinkedHashSet<String>()
+    var ignoredCount = 0
+    var processedCount = 0
 
     rawText
       .lines()
       .map { it.trim().replace(Regex("\\s+"), " ") }
       .filter { it.length >= 6 }
       .forEach { line ->
+        processedCount += 1
         val lower = line.lowercase(Locale.US)
         if (ignoredUiTokens.any { token -> lower == token || lower.startsWith("$token ") }) {
+          ignoredCount += 1
           return@forEach
         }
         uniqueLines.add(line)
       }
+
+    if (processedCount > 0 && ignoredCount >= 2 && ignoredCount >= processedCount * 0.45) {
+      return ""
+    }
 
     return uniqueLines.joinToString(" ").take(1100)
   }

@@ -30,12 +30,33 @@ const prominentPeople = [
 
 const trustedDomains = [
   "gov.ph",
+  "officialgazette.gov.ph",
+  "doh.gov.ph",
+  "psa.gov.ph",
   "dost.gov.ph",
+  "pna.gov.ph",
+  "comelec.gov.ph",
+  "neda.gov.ph",
+  "bsp.gov.ph",
   "who.int",
   "verafiles.org",
   "rappler.com",
+  "factsfirst.ph",
+  "tsek.ph",
+  "pressone.ph",
+  "philstar.com",
   "inquirer.net",
-  "gmanetwork.com"
+  "abs-cbn.com",
+  "news.abs-cbn.com",
+  "gmanetwork.com",
+  "gmanews.tv",
+  "mb.com.ph",
+  "manilatimes.net",
+  "bworldonline.com",
+  "news5.com.ph",
+  "sunstar.com.ph",
+  "mindanews.com",
+  "cnnphilippines.com"
 ];
 
 function clamp(num: number, min: number, max: number): number {
@@ -112,6 +133,11 @@ export function analyzeOfflineClaim(input: OfflineAnalyzeInput): AnalyzeResponse
   const deathHoaxPattern =
     deathClaimVerbs.some((verb) => lowerContent.includes(verb)) &&
     prominentPeople.some((name) => lowerContent.includes(name));
+  const hasStrongTrustedCoverage = trustedMatchPercent >= 50;
+  const lowManipulationRisk = languageRisk <= 0.42;
+  if (hasStrongTrustedCoverage && lowManipulationRisk && !deathHoaxPattern) {
+    riskScore = Math.min(riskScore, 0.34);
+  }
   if (deathHoaxPattern && trustedMatchPercent < 40) {
     riskScore = Math.max(riskScore, 0.8);
   }

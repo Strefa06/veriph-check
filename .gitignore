@@ -1,0 +1,14 @@
+node_modules/
+.env
+.env.*
+dist/
+coverage/
+.expo/
+.expo-shared/
+*.log
+mobile/credentials.json
+mobile/android-upload-key.keystore
+*.apk
+*.tar.gz
+debug/
+release/

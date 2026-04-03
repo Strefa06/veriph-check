@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "ReAIlize",
+    "slug": "veriph-check",
+    "version": "2.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true
+    },
+    "android": {
+      "package": "com.realize.app",
+      "permissions": [
+        "android.permission.SYSTEM_ALERT_WINDOW",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.ACCESSIBILITY_SERVICE"
+      ]
+    },
+    "plugins": [
+      "expo-asset"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "91575494-dc34-46eb-844a-9ce2f204c3d5"
+      }
+    },
+    "owner": "strefa"
+  }
+}

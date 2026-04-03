@@ -1,6 +1,6 @@
 import { trustedPhilippineSources } from "../data/trustedSources.js";
 import { analyzeWithProvider } from "./providerNlpService.js";
-import { NewsMatch, enrichClaimWithTrustedNews } from "./newsContextService.js";
+import { FactCheckMatch, NewsMatch, enrichClaimWithTrustedNews } from "./newsContextService.js";
 import {
   mapDomainsToTrustedSourceNames,
   mergeClaimedAndExtractedSources,
@@ -41,8 +41,10 @@ export type AnalyzeResult = {
   notes: string[];
   matchedSources: NewsMatch[];
   rssMatches: NewsMatch[];
+  factCheckMatches: FactCheckMatch[];
   trustScore: number;
   newsExplanation: string;
+  factCheckSummary: string;
 };
 
 const suspiciousPhrases = [
@@ -259,8 +261,10 @@ export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
     notes,
     matchedSources: [],
     rssMatches: [],
+    factCheckMatches: [],
     trustScore: 0,
-    newsExplanation: "No external news matching applied yet."
+    newsExplanation: "No external news matching applied yet.",
+    factCheckSummary: "No fact-check evidence yet."
   };
 }
 
@@ -295,8 +299,15 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
     },
     matchedSources: newsEnrichment.matchedSources,
     rssMatches: newsEnrichment.rssMatches,
+    factCheckMatches: newsEnrichment.factCheckMatches,
     trustScore: newsEnrichment.trustScore,
-    newsExplanation: newsEnrichment.explanation
+    newsExplanation: newsEnrichment.explanation,
+    factCheckSummary:
+      newsEnrichment.factCheckMatches.length > 0
+        ? `Fact-check reviews found: ${newsEnrichment.factCheckMatches.filter((item) => item.verdict === "refutes").length} refute, ${
+            newsEnrichment.factCheckMatches.filter((item) => item.verdict === "supports").length
+          } support.`
+        : "No fact-check review returned for this claim."
   };
 
   const newsMatchNotes = [
@@ -308,6 +319,50 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
   ];
 
   const boostedLocal = (() => {
+    const refuteCount = baseWithNews.factCheckMatches.filter((item) => item.verdict === "refutes").length;
+    const supportCount = baseWithNews.factCheckMatches.filter((item) => item.verdict === "supports").length;
+
+    if (refuteCount > 0) {
+      const nextConfidence = Math.max(baseWithNews.confidence, 0.88);
+      const nextRiskScore = Math.max(baseWithNews.riskScore, 0.78);
+      const nextFake = Math.max(baseWithNews.fakeNewsLikelihood, 0.9);
+      const nextAi = Math.min(baseWithNews.aiLikelihood, 0.35);
+
+      return {
+        ...baseWithNews,
+        label: "Fake" as const,
+        mode: "Likely Misleading" as const,
+        confidence: Number(nextConfidence.toFixed(2)),
+        riskScore: Number(nextRiskScore.toFixed(2)),
+        fakeNewsLikelihood: Number(nextFake.toFixed(2)),
+        aiLikelihood: Number(nextAi.toFixed(2)),
+        humanLikelihood: Number((1 - nextAi).toFixed(2)),
+        explanation:
+          "Fact-check sources report this claim as false or misleading. Treat as likely fake unless contradicted by stronger official evidence."
+      };
+    }
+
+    if (supportCount > 0 && baseWithNews.trustScore >= 60 && baseWithNews.riskScore < 0.6) {
+      const nextConfidence = Math.max(baseWithNews.confidence, 0.82);
+      const nextRiskScore = Math.min(baseWithNews.riskScore, 0.3);
+      const nextFake = Math.min(baseWithNews.fakeNewsLikelihood, 0.22);
+      const nextAi = Math.min(baseWithNews.aiLikelihood, 0.3);
+
+      return {
+        ...baseWithNews,
+        label: "Real" as const,
+        mode: "Likely Real" as const,
+        confidence: Number(nextConfidence.toFixed(2)),
+        riskScore: Number(nextRiskScore.toFixed(2)),
+        fakeNewsLikelihood: Number(nextFake.toFixed(2)),
+        aiLikelihood: Number(nextAi.toFixed(2)),
+        humanLikelihood: Number((1 - nextAi).toFixed(2)),
+        explanation:
+          baseWithNews.explanation +
+          " Fact-check records and trusted-source matches indicate this is likely real."
+      };
+    }
+
     if (newsEnrichment.trustScore < 60 || newsEnrichment.strongestMatchScore < 0.45) {
       return baseWithNews;
     }
@@ -379,6 +434,7 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
       explanation: provider.explanation,
       notes: [
         ...newsMatchNotes,
+        boostedLocal.factCheckSummary,
         ...enrichment.notes,
         `Primary inference provider: ${provider.provider}`,
         ...boostedLocal.notes

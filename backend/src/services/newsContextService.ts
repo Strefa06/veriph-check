@@ -3,6 +3,8 @@ import { normalizeDomain } from "./sourceExtractionService.js";
 
 type MatchProvider = "newsapi" | "gnews" | "rss";
 
+type FactCheckVerdict = "supports" | "refutes" | "mixed" | "unknown";
+
 type RawNewsItem = {
   title: string;
   url: string;
@@ -23,9 +25,21 @@ export type NewsMatch = {
   reliability: number;
 };
 
+export type FactCheckMatch = {
+  claim: string;
+  claimant?: string;
+  publisher: string;
+  url: string;
+  textualRating: string;
+  reviewDate?: string;
+  verdict: FactCheckVerdict;
+  score: number;
+};
+
 export type NewsContextEnrichment = {
   matchedSources: NewsMatch[];
   rssMatches: NewsMatch[];
+  factCheckMatches: FactCheckMatch[];
   inferredSources: string[];
   matchedHeadlines: string[];
   matchedLinks: string[];
@@ -40,6 +54,7 @@ export type NewsContextEnrichment = {
 const GOOGLE_NEWS_RSS_BASE = "https://news.google.com/rss/search";
 const NEWSAPI_BASE = "https://newsapi.org/v2/everything";
 const GNEWS_BASE = "https://gnews.io/api/v4/search";
+const FACT_CHECK_BASE = "https://factchecktools.googleapis.com/v1alpha1/claims:search";
 const FETCH_TIMEOUT_MS = 3200;
 const MAX_ITEMS = 30;
 const MIN_MATCH_SCORE_STRONG = 0.5;
@@ -64,10 +79,6 @@ function decodeEntities(value: string): string {
     .replace(/&gt;/g, ">")
     .replace(/\s+/g, " ")
     .trim();
-}
-
-function escapeRegExp(value: string): string {
-  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeText(value: string): string {
@@ -309,6 +320,97 @@ async function fetchGNewsItems(query: string): Promise<{ items: RawNewsItem[]; e
   return { items };
 }
 
+function parseFactCheckVerdict(textualRating: string): { verdict: FactCheckVerdict; score: number } {
+  const lower = textualRating.toLowerCase();
+
+  const refuteTokens = [
+    "false",
+    "fake",
+    "hoax",
+    "misleading",
+    "incorrect",
+    "not true",
+    "pants on fire",
+    "scam"
+  ];
+  const supportTokens = ["true", "correct", "accurate", "mostly true", "real", "verified"];
+  const mixedTokens = ["partly", "partially", "mixed", "half true", "needs context"];
+
+  if (refuteTokens.some((token) => lower.includes(token))) {
+    return { verdict: "refutes", score: -1 };
+  }
+  if (supportTokens.some((token) => lower.includes(token))) {
+    return { verdict: "supports", score: 0.9 };
+  }
+  if (mixedTokens.some((token) => lower.includes(token))) {
+    return { verdict: "mixed", score: -0.2 };
+  }
+
+  return { verdict: "unknown", score: 0 };
+}
+
+async function fetchFactCheckMatches(query: string): Promise<{ matches: FactCheckMatch[]; error?: string }> {
+  const apiKey = process.env.GOOGLE_FACTCHECK_API_KEY;
+  if (!apiKey) {
+    return { matches: [], error: "GOOGLE_FACTCHECK_API_KEY missing" };
+  }
+
+  const url = `${FACT_CHECK_BASE}?query=${encodeURIComponent(query)}&languageCode=en&pageSize=10&key=${encodeURIComponent(apiKey)}`;
+  const data = (await fetchJson(url)) as
+    | {
+        claims?: Array<{
+          text?: string;
+          claimant?: string;
+          claimReview?: Array<{
+            publisher?: { name?: string };
+            url?: string;
+            textualRating?: string;
+            reviewDate?: string;
+            title?: string;
+          }>;
+        }>;
+      }
+    | null;
+
+  if (!data || !Array.isArray(data.claims)) {
+    return { matches: [], error: "Fact Check API request failed" };
+  }
+
+  const matches: FactCheckMatch[] = [];
+
+  for (const claim of data.claims) {
+    const claimText = decodeEntities((claim.text || "").trim());
+    const claimant = decodeEntities((claim.claimant || "").trim()) || undefined;
+    const reviews = Array.isArray(claim.claimReview) ? claim.claimReview : [];
+
+    for (const review of reviews) {
+      const publisher = decodeEntities((review.publisher?.name || "").trim()) || "Unknown fact-check source";
+      const textualRating = decodeEntities((review.textualRating || review.title || "").trim());
+      const verdict = parseFactCheckVerdict(textualRating);
+      const urlValue = decodeEntities((review.url || "").trim());
+
+      if (!claimText || !urlValue) continue;
+
+      matches.push({
+        claim: claimText,
+        claimant,
+        publisher,
+        url: urlValue,
+        textualRating: textualRating || "No textual rating provided",
+        reviewDate: review.reviewDate,
+        verdict: verdict.verdict,
+        score: verdict.score
+      });
+    }
+  }
+
+  const deduped = Array.from(
+    new Map(matches.map((item) => [`${normalizeText(item.claim)}|${item.url}`, item])).values()
+  ).slice(0, 8);
+
+  return { matches: deduped };
+}
+
 function recencyScore(timestamp?: string): number {
   if (!timestamp) return 0.45;
   const t = Date.parse(timestamp);
@@ -336,7 +438,22 @@ function computeTrustScore(matches: NewsMatch[]): number {
   return Math.round(Math.max(0, Math.min(1, blended)) * 100);
 }
 
-function buildTrustExplanation(trustScore: number, strongest: number, matches: NewsMatch[]): string {
+function buildTrustExplanation(
+  trustScore: number,
+  strongest: number,
+  matches: NewsMatch[],
+  factCheckMatches: FactCheckMatch[]
+): string {
+  const hasStrongRefute = factCheckMatches.some((item) => item.verdict === "refutes" && item.score <= -0.8);
+  const hasSupport = factCheckMatches.some((item) => item.verdict === "supports" && item.score >= 0.8);
+
+  if (hasStrongRefute) {
+    return "Claim is likely misleading/fake because fact-check records indicate a false or misleading verdict.";
+  }
+  if (hasSupport && trustScore >= 60) {
+    return "Claim is likely real due to fact-check support and trusted-source news alignment.";
+  }
+
   if (!matches.length) {
     return "No strong matching PH news records were found from APIs/RSS for this text claim.";
   }
@@ -393,6 +510,7 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
     return {
       matchedSources: [],
       rssMatches: [],
+      factCheckMatches: [],
       inferredSources: [],
       matchedHeadlines: [],
       matchedLinks: [],
@@ -406,6 +524,8 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
   }
 
   const query = buildSearchQuery(trimmed);
+  const factCheckResult = await fetchFactCheckMatches(query);
+  const factCheckMatches = factCheckResult.matches;
 
   const hasPrimaryKeys = Boolean(process.env.NEWSAPI_KEY || process.env.GNEWS_API_KEY);
   let usedPrimaryApis = false;
@@ -439,17 +559,38 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
   const selectedItems = usedPrimaryApis ? primaryItems : rssItems;
 
   if (!selectedItems.length) {
+    const refuteCount = factCheckMatches.filter((item) => item.verdict === "refutes").length;
+    const supportCount = factCheckMatches.filter((item) => item.verdict === "supports").length;
+    let trustScore = 0;
+    if (supportCount > 0 && refuteCount === 0) {
+      trustScore = 70;
+    }
+    if (refuteCount > 0) {
+      trustScore = 12;
+    }
+
+    const notes: string[] = [];
+    if (factCheckResult.error && factCheckResult.error !== "GOOGLE_FACTCHECK_API_KEY missing") {
+      notes.push(`Fact-check API warning: ${factCheckResult.error}`);
+    }
+
     return {
       matchedSources: [],
       rssMatches: [],
+      factCheckMatches,
       inferredSources: [],
       matchedHeadlines: [],
       matchedLinks: [],
-      trustScore: 0,
-      explanation: "No usable results from primary news APIs or RSS fallback.",
+      trustScore,
+      explanation:
+        refuteCount > 0
+          ? "Fact-check records indicate a likely false/misleading claim."
+          : supportCount > 0
+            ? "Fact-check records support the claim, but no fresh PH news matches were found."
+            : "No usable results from primary news APIs or RSS fallback.",
       usedPrimaryApis,
       primaryApiErrors,
-      notes: [],
+      notes,
       strongestMatchScore: 0
     };
   }
@@ -471,8 +612,16 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
   );
   const matchedHeadlines = matches.slice(0, 3).map((item) => item.headline);
   const matchedLinks = matches.slice(0, 3).map((item) => item.url);
-  const trustScore = computeTrustScore(matches);
-  const explanation = buildTrustExplanation(trustScore, strongest, matches);
+  let trustScore = computeTrustScore(matches);
+  const refuteCount = factCheckMatches.filter((item) => item.verdict === "refutes").length;
+  const supportCount = factCheckMatches.filter((item) => item.verdict === "supports").length;
+  if (refuteCount > 0) {
+    trustScore = Math.max(5, trustScore - 45);
+  } else if (supportCount > 0) {
+    trustScore = Math.min(100, trustScore + 12);
+  }
+
+  const explanation = buildTrustExplanation(trustScore, strongest, matches, factCheckMatches);
 
   const notes: string[] = [];
   if (matches.length > 0) {
@@ -500,6 +649,20 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
     }
   }
 
+  if (factCheckMatches.length) {
+    notes.push(
+      `Fact-check results: ${refuteCount} refute, ${supportCount} support, ${
+        factCheckMatches.filter((item) => item.verdict === "mixed").length
+      } mixed/unclear.`
+    );
+  } else if (factCheckResult.error === "GOOGLE_FACTCHECK_API_KEY missing") {
+    notes.push("Google Fact Check API key is not configured; fact-check layer is currently disabled.");
+  }
+
+  if (factCheckResult.error && factCheckResult.error !== "GOOGLE_FACTCHECK_API_KEY missing") {
+    notes.push(`Fact-check API warning: ${factCheckResult.error}`);
+  }
+
   if (primaryApiErrors.length) {
     notes.push(`Primary API warnings: ${primaryApiErrors.join("; ")}`);
   }
@@ -507,6 +670,7 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
   return {
     matchedSources,
     rssMatches,
+    factCheckMatches,
     inferredSources,
     matchedHeadlines,
     matchedLinks,

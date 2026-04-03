@@ -1,4 +1,5 @@
-const URL_REGEX = /https?:\/\/[^\s)]+|www\.[^\s)]+/gi;
+const URL_REGEX = /https?:\/\/[^\s)\]}>"']+|www\.[^\s)\]}>"']+/gi;
+const DOMAIN_REGEX = /\b(?:[a-z0-9-]+\.)+[a-z]{2,}(?:\/[\w\-./?%&=+#]*)?/gi;
 
 const trustedDomains = [
   "officialgazette.gov.ph",
@@ -47,7 +48,7 @@ const sourceKeywordAliases: Array<{ keyword: string; domain: string }> = [
   { keyword: "philstar", domain: "philstar.com" },
   { keyword: "inquirer", domain: "inquirer.net" },
   { keyword: "abs-cbn news", domain: "news.abs-cbn.com" },
-  { keyword: "abs-cbn", domain: "news.abs-cbn.com" },
+  { keyword: "abs-cbn", domain: "abs-cbn.com" },
   { keyword: "manila bulletin", domain: "mb.com.ph" },
   { keyword: "manila times", domain: "manilatimes.net" },
   { keyword: "businessworld", domain: "bworldonline.com" },
@@ -75,6 +76,14 @@ export function extractSourceDomains(content: string): string[] {
   for (const link of links) {
     const domain = normalizeDomain(link);
     if (domain.length > 3) {
+      domains.add(domain);
+    }
+  }
+
+  const bareMatches = content.match(DOMAIN_REGEX) ?? [];
+  for (const match of bareMatches) {
+    const domain = normalizeDomain(match);
+    if (domain.includes(".") && domain.length > 3) {
       domains.add(domain);
     }
   }

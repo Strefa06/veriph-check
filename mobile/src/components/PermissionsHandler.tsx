@@ -17,7 +17,6 @@ type PermissionStatus = "granted" | "denied" | "pending";
 export type PermisionsState = {
   overlay: PermissionStatus;
   microphone: PermissionStatus;
-  accessibility: PermissionStatus;
   screenCapture: PermissionStatus;
 };
 
@@ -30,7 +29,6 @@ export function PermissionsHandler({ onStatusChange }: Props) {
   const [permissions, setPermissions] = useState<PermisionsState>({
     overlay: "pending",
     microphone: "pending",
-    accessibility: "pending",
     screenCapture: "pending"
   });
 
@@ -43,7 +41,6 @@ export function PermissionsHandler({ onStatusChange }: Props) {
       const next = {
         overlay: "denied" as PermissionStatus,
         microphone: "denied" as PermissionStatus,
-        accessibility: "denied" as PermissionStatus,
         screenCapture: "denied" as PermissionStatus
       };
       setPermissions(next);
@@ -59,7 +56,6 @@ export function PermissionsHandler({ onStatusChange }: Props) {
     const next = {
       overlay: overlayStatus.hasDrawOverlayPermission ? "granted" : "denied",
       microphone: micGranted ? "granted" : "denied",
-      accessibility: overlayStatus.hasAccessibilityPermission ? "granted" : "denied",
       screenCapture: overlayStatus.hasScreenCapturePermission ? "granted" : "denied"
     } as PermisionsState;
 
@@ -95,13 +91,6 @@ export function PermissionsHandler({ onStatusChange }: Props) {
       if (result !== PermissionsAndroid.RESULTS.GRANTED) {
         Alert.alert("Microphone Denied", "Enable microphone permission in settings.");
       }
-      await checkPermissions();
-      return;
-    }
-
-    if (permissionName === "accessibility") {
-      await OverlayBridge.requestAccessibilityPermission();
-      Alert.alert("Accessibility", "Enable ReAIlize accessibility service and return.");
       await checkPermissions();
       return;
     }

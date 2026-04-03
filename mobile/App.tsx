@@ -134,7 +134,7 @@ function ReAIlizeApp() {
   const { isDark, toggleTheme, colors } = useTheme();
   const { overlayActive, detectionActive, setOverlayActive, setDetectionActive } = useOverlay();
   const [activeScreen, setActiveScreen] = useState<Screen>("analyze");
-  const [mode, setMode] = useState<AnalyzeType>("video");
+  const [mode, setMode] = useState<AnalyzeType>("text");
   const [content, setContent] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

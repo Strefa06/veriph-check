@@ -24,7 +24,7 @@ export function ResultCard({ result }: Props) {
 
       {/* Gauge */}
       <View style={styles.gaugeSection}>
-        <TrustScoreGauge trustScore={result.confidence * 100} />
+        <TrustScoreGauge trustScore={result.sourceVerification.trustedMatchPercent} />
       </View>
 
       {/* Metrics */}
@@ -65,6 +65,19 @@ export function ResultCard({ result }: Props) {
           ))}
         </View>
       )}
+
+      {(!result.sourceVerification.matchedTrustedSources || result.sourceVerification.matchedTrustedSources.length === 0) &&
+        result.sourceVerification.checkedSources &&
+        result.sourceVerification.checkedSources.length > 0 && (
+          <View style={[styles.verifyBox, { backgroundColor: colors.bgPrimary, borderColor: colors.warning }]}>
+            <Text style={[styles.verifyTitle, { color: colors.warning }]}>Detected Source Domains</Text>
+            {result.sourceVerification.checkedSources.slice(0, 8).map((source: string, idx: number) => (
+              <Text key={`${source}-${idx}`} style={[styles.verifyItem, { color: colors.text }]}>
+                • {source}
+              </Text>
+            ))}
+          </View>
+        )}
 
       {/* Evidence */}
       {result.evidence && result.evidence.length > 0 && (

@@ -30,10 +30,16 @@ const EXTRA_API_BASE =
   typeof Constants.expoConfig?.extra?.apiBaseUrl === "string"
     ? Constants.expoConfig.extra.apiBaseUrl
     : "";
+const ENV_API_BASE =
+  typeof (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+    ?.EXPO_PUBLIC_API_BASE_URL === "string"
+    ? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process!.env!
+        .EXPO_PUBLIC_API_BASE_URL!
+    : "";
 const API_BASE =
-  (process.env.EXPO_PUBLIC_API_BASE_URL || EXTRA_API_BASE || "http://10.0.2.2:4000/api").replace(/\/$/, "");
-const REQUEST_TIMEOUT_MS = 9000;
-const MAX_RETRIES = 3;
+  (ENV_API_BASE || EXTRA_API_BASE || "http://10.0.2.2:4000/api").replace(/\/$/, "");
+const REQUEST_TIMEOUT_MS = 6000;
+const MAX_RETRIES = 2;
 
 function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -81,7 +87,7 @@ async function requestJson<T>(
         if (!retriable || attempt === retries) {
           throw new Error(body || `Request failed with status ${response.status}`);
         }
-        await delay(350 * attempt);
+        await delay(220 * attempt);
         continue;
       }
 
@@ -94,7 +100,7 @@ async function requestJson<T>(
         break;
       }
 
-      await delay(350 * attempt);
+      await delay(220 * attempt);
     }
   }
 
@@ -123,6 +129,9 @@ export async function analyzeContent(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ content, claimedSources })
+  }, {
+    retries: 1,
+    timeoutMs: 5200
   });
 }
 
@@ -134,6 +143,9 @@ export async function startRealtimeSession(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ type, claimedSources })
+  }, {
+    retries: 1,
+    timeoutMs: 4200
   });
 
   return data.sessionId;
@@ -147,6 +159,9 @@ export async function pushRealtimeChunk(
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
+  }, {
+    retries: 1,
+    timeoutMs: 3600
   });
 }
 

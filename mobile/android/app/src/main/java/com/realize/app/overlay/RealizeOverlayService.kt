@@ -166,6 +166,25 @@ class RealizeOverlayService : Service(), RecognitionListener {
     "notifications"
   )
 
+  private val overlaySelfKeywords = setOf(
+    "reailize",
+    "real-time ai and fake news detection",
+    "manual mode input",
+    "analyze manual input",
+    "realtime overlay mode",
+    "start live session",
+    "stop live session",
+    "latest detection",
+    "waiting for analysis",
+    "detected source",
+    "likely real",
+    "likely misleading",
+    "uncertain",
+    "trust",
+    "confidence",
+    "risk"
+  )
+
   private var mediaProjection: MediaProjection? = null
   private var imageReader: ImageReader? = null
   private var virtualDisplay: VirtualDisplay? = null
@@ -671,6 +690,19 @@ class RealizeOverlayService : Service(), RecognitionListener {
       .trim()
   }
 
+  private fun isLikelySelfOverlayText(text: String): Boolean {
+    val lower = text.lowercase(Locale.US)
+    var hits = 0
+
+    overlaySelfKeywords.forEach { keyword ->
+      if (lower.contains(keyword)) {
+        hits += 1
+      }
+    }
+
+    return hits >= 2
+  }
+
   private fun levenshteinDistance(left: String, right: String): Int {
     if (left.isEmpty()) return right.length
     if (right.isEmpty()) return left.length
@@ -766,6 +798,7 @@ class RealizeOverlayService : Service(), RecognitionListener {
   private fun emitIfChanged(source: String, text: String) {
     val normalized = text.trim().replace(Regex("\\s+"), " ")
     if (normalized.length < 8) return
+    if (source == "screen" && isLikelySelfOverlayText(normalized)) return
 
     val comparable = normalizeForComparison(normalized)
     val now = System.currentTimeMillis()

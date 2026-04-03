@@ -27,6 +27,14 @@ app.use(cors());
 app.use(express.json({ limit: "2mb" }));
 app.use(morgan("dev"));
 
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "veriph-backend",
+    message: "Backend is running. Use /api/health for health checks."
+  });
+});
+
 app.get("/api/health", (_req, res) => {
   res.json({ ok: true, service: "veriph-backend" });
 });

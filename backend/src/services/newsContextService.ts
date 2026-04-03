@@ -36,6 +36,16 @@ export type FactCheckMatch = {
   score: number;
 };
 
+export type NewsVerificationDiagnostics = {
+  newsRetrievalMode: "primary-api" | "rss-fallback" | "none";
+  usedNewsProviders: MatchProvider[];
+  primaryApiConfigured: boolean;
+  primaryApiErrors: string[];
+  factCheckConfigured: boolean;
+  factCheckStatus: "ok" | "error" | "disabled";
+  factCheckError?: string;
+};
+
 export type NewsContextEnrichment = {
   matchedSources: NewsMatch[];
   rssMatches: NewsMatch[];
@@ -47,6 +57,7 @@ export type NewsContextEnrichment = {
   explanation: string;
   usedPrimaryApis: boolean;
   primaryApiErrors: string[];
+  diagnostics: NewsVerificationDiagnostics;
   notes: string[];
   strongestMatchScore: number;
 };
@@ -506,6 +517,8 @@ function toAgeNote(pubDate?: string): string {
 
 export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsContextEnrichment> {
   const trimmed = claim.trim();
+  const factCheckConfigured = Boolean(process.env.GOOGLE_FACTCHECK_API_KEY);
+
   if (trimmed.length < 20) {
     return {
       matchedSources: [],
@@ -518,6 +531,14 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
       explanation: "Claim is too short for reliable external news matching.",
       usedPrimaryApis: false,
       primaryApiErrors: [],
+      diagnostics: {
+        newsRetrievalMode: "none",
+        usedNewsProviders: [],
+        primaryApiConfigured: Boolean(process.env.NEWSAPI_KEY || process.env.GNEWS_API_KEY),
+        primaryApiErrors: [],
+        factCheckConfigured,
+        factCheckStatus: factCheckConfigured ? "ok" : "disabled"
+      },
       notes: [],
       strongestMatchScore: 0
     };
@@ -526,6 +547,10 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
   const query = buildSearchQuery(trimmed);
   const factCheckResult = await fetchFactCheckMatches(query);
   const factCheckMatches = factCheckResult.matches;
+  const factCheckError =
+    factCheckResult.error && factCheckResult.error !== "GOOGLE_FACTCHECK_API_KEY missing"
+      ? factCheckResult.error
+      : undefined;
 
   const hasPrimaryKeys = Boolean(process.env.NEWSAPI_KEY || process.env.GNEWS_API_KEY);
   let usedPrimaryApis = false;
@@ -590,6 +615,15 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
             : "No usable results from primary news APIs or RSS fallback.",
       usedPrimaryApis,
       primaryApiErrors,
+      diagnostics: {
+        newsRetrievalMode: "none",
+        usedNewsProviders: [],
+        primaryApiConfigured: hasPrimaryKeys,
+        primaryApiErrors,
+        factCheckConfigured,
+        factCheckStatus: factCheckConfigured ? (factCheckError ? "error" : "ok") : "disabled",
+        ...(factCheckError ? { factCheckError } : {})
+      },
       notes,
       strongestMatchScore: 0
     };
@@ -663,6 +697,8 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
     notes.push(`Fact-check API warning: ${factCheckResult.error}`);
   }
 
+  const usedNewsProviders = Array.from(new Set(selectedItems.map((item) => item.provider))) as MatchProvider[];
+
   if (primaryApiErrors.length) {
     notes.push(`Primary API warnings: ${primaryApiErrors.join("; ")}`);
   }
@@ -678,6 +714,15 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
     explanation,
     usedPrimaryApis,
     primaryApiErrors,
+    diagnostics: {
+      newsRetrievalMode: usedPrimaryApis ? "primary-api" : "rss-fallback",
+      usedNewsProviders,
+      primaryApiConfigured: hasPrimaryKeys,
+      primaryApiErrors,
+      factCheckConfigured,
+      factCheckStatus: factCheckConfigured ? (factCheckError ? "error" : "ok") : "disabled",
+      ...(factCheckError ? { factCheckError } : {})
+    },
     notes,
     strongestMatchScore: strongest
   };

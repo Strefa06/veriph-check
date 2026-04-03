@@ -1,6 +1,11 @@
 import { trustedPhilippineSources } from "../data/trustedSources.js";
 import { analyzeWithProvider } from "./providerNlpService.js";
-import { FactCheckMatch, NewsMatch, enrichClaimWithTrustedNews } from "./newsContextService.js";
+import {
+  FactCheckMatch,
+  NewsMatch,
+  NewsVerificationDiagnostics,
+  enrichClaimWithTrustedNews
+} from "./newsContextService.js";
 import {
   mapDomainsToTrustedSourceNames,
   mergeClaimedAndExtractedSources,
@@ -45,6 +50,7 @@ export type AnalyzeResult = {
   trustScore: number;
   newsExplanation: string;
   factCheckSummary: string;
+  diagnostics: NewsVerificationDiagnostics;
 };
 
 const suspiciousPhrases = [
@@ -264,7 +270,15 @@ export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
     factCheckMatches: [],
     trustScore: 0,
     newsExplanation: "No external news matching applied yet.",
-    factCheckSummary: "No fact-check evidence yet."
+    factCheckSummary: "No fact-check evidence yet.",
+    diagnostics: {
+      newsRetrievalMode: "none",
+      usedNewsProviders: [],
+      primaryApiConfigured: false,
+      primaryApiErrors: [],
+      factCheckConfigured: false,
+      factCheckStatus: "disabled"
+    }
   };
 }
 
@@ -307,7 +321,8 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
         ? `Fact-check reviews found: ${newsEnrichment.factCheckMatches.filter((item) => item.verdict === "refutes").length} refute, ${
             newsEnrichment.factCheckMatches.filter((item) => item.verdict === "supports").length
           } support.`
-        : "No fact-check review returned for this claim."
+        : "No fact-check review returned for this claim.",
+    diagnostics: newsEnrichment.diagnostics
   };
 
   const newsMatchNotes = [

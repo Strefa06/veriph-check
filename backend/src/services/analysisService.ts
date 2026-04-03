@@ -1,6 +1,7 @@
 import { trustedPhilippineSources } from "../data/trustedSources.js";
 import { analyzeWithProvider } from "./providerNlpService.js";
 import { mergeClaimedAndExtractedSources, normalizeDomain } from "./sourceExtractionService.js";
+import { enrichClaimWithUrlContext } from "./urlContextService.js";
 
 type AnalyzeInput = {
   type: "text" | "audio" | "video";
@@ -62,7 +63,7 @@ function clamp(num: number, min: number, max: number): number {
 
 function scoreContentRisk(content: string): number {
   const lower = content.toLowerCase();
-  let score = 0.3;
+  let score = 0.24;
 
   for (const phrase of suspiciousPhrases) {
     if (lower.includes(phrase)) {
@@ -103,7 +104,7 @@ function evaluateSources(claimedSources: string[]): {
           reason: "No link or publisher was provided for verification."
         }
       ],
-      sourceRisk: 0.6,
+      sourceRisk: 0.42,
       trustedMatchPercent: 0,
       matchedTrustedSources: []
     };
@@ -128,7 +129,7 @@ function evaluateSources(claimedSources: string[]): {
     return {
       source: domain,
       trusted: false,
-      trustWeight: 0.2,
+      trustWeight: 0.45,
       reason: "Source not in trusted PH source list."
     };
   });
@@ -251,13 +252,26 @@ export function analyzeClaim(input: AnalyzeInput): AnalyzeResult {
 }
 
 export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<AnalyzeResult> {
-  const local = analyzeClaim(input);
-  const consolidatedSources = mergeClaimedAndExtractedSources(input.claimedSources ?? [], input.content);
+  const enrichment = await enrichClaimWithUrlContext(input.content);
+  const enrichedContent = [input.content, enrichment.appendedText].filter(Boolean).join("\n\n").slice(0, 7000);
+  const enrichedSources = mergeClaimedAndExtractedSources(
+    [...(input.claimedSources ?? []), ...enrichment.inferredSources],
+    enrichedContent
+  );
+
+  const local = analyzeClaim({
+    ...input,
+    content: enrichedContent,
+    claimedSources: enrichedSources
+  });
 
   try {
-    const provider = await analyzeWithProvider(input.content, input.type, consolidatedSources);
+    const provider = await analyzeWithProvider(enrichedContent, input.type, enrichedSources);
     if (!provider) {
-      return local;
+      return {
+        ...local,
+        notes: [...enrichment.notes, ...local.notes]
+      };
     }
 
     const mode: AnalyzeResult["mode"] =
@@ -292,11 +306,15 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
       humanLikelihood: Number((1 - provider.aiLikelihood).toFixed(2)),
       explanation: provider.explanation,
       notes: [
+        ...enrichment.notes,
         `Primary inference provider: ${provider.provider}`,
         ...local.notes
       ]
     };
   } catch {
-    return local;
+    return {
+      ...local,
+      notes: [...enrichment.notes, ...local.notes]
+    };
   }
 }

@@ -3,6 +3,7 @@ import { normalizeDomain } from "./sourceExtractionService.js";
 
 type HeadlineMatch = {
   title: string;
+  link: string;
   domain: string;
   score: number;
   pubDate?: string;
@@ -11,6 +12,7 @@ type HeadlineMatch = {
 export type NewsContextEnrichment = {
   inferredSources: string[];
   matchedHeadlines: string[];
+  matchedLinks: string[];
   notes: string[];
   strongestMatchScore: number;
 };
@@ -18,7 +20,8 @@ export type NewsContextEnrichment = {
 const GOOGLE_NEWS_RSS_BASE = "https://news.google.com/rss/search";
 const FETCH_TIMEOUT_MS = 3200;
 const MAX_ITEMS = 24;
-const MIN_MATCH_SCORE = 0.56;
+const MIN_MATCH_SCORE_STRONG = 0.56;
+const MIN_MATCH_SCORE_WEAK = 0.4;
 
 function decodeEntities(value: string): string {
   return value
@@ -172,6 +175,7 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
     return {
       inferredSources: [],
       matchedHeadlines: [],
+      matchedLinks: [],
       notes: [],
       strongestMatchScore: 0
     };
@@ -185,6 +189,7 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
     return {
       inferredSources: [],
       matchedHeadlines: [],
+      matchedLinks: [],
       notes: [],
       strongestMatchScore: 0
     };
@@ -198,9 +203,10 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
     if (!isTrustedDomain(domain)) continue;
 
     const score = jaccardSimilarity(trimmed, item.title);
-    if (score >= MIN_MATCH_SCORE) {
+    if (score >= MIN_MATCH_SCORE_WEAK) {
       candidates.push({
         title: item.title,
+        link: item.link,
         domain,
         score,
         pubDate: item.pubDate
@@ -210,16 +216,25 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
 
   candidates.sort((a, b) => b.score - a.score);
 
-  const top = candidates.slice(0, 3);
-  const inferredSources = Array.from(new Set(top.map((item) => item.domain)));
-  const matchedHeadlines = top.map((item) => item.title);
+  const top = candidates.slice(0, 5);
+  const inferredSources = Array.from(
+    new Set(top.filter((item) => item.score >= MIN_MATCH_SCORE_WEAK).map((item) => item.domain))
+  );
+  const matchedHeadlines = top.slice(0, 3).map((item) => item.title);
+  const matchedLinks = top.slice(0, 3).map((item) => item.link);
   const strongest = top[0]?.score ?? 0;
 
   const notes: string[] = [];
   if (top.length > 0) {
-    notes.push(
-      `Matched ${top.length} trusted-source headline(s) from PH news feeds (best similarity ${(strongest * 100).toFixed(0)}%).`
-    );
+    if (strongest >= MIN_MATCH_SCORE_STRONG) {
+      notes.push(
+        `Matched ${top.length} trusted-source headline(s) from PH news feeds (best similarity ${(strongest * 100).toFixed(0)}%).`
+      );
+    } else {
+      notes.push(
+        `Found partial trusted-source headline match(es) from PH feeds (best similarity ${(strongest * 100).toFixed(0)}%).`
+      );
+    }
     const ageNote = toAgeNote(top[0].pubDate);
     if (ageNote) {
       notes.push(ageNote);
@@ -229,6 +244,7 @@ export async function enrichClaimWithTrustedNews(claim: string): Promise<NewsCon
   return {
     inferredSources,
     matchedHeadlines,
+    matchedLinks,
     notes,
     strongestMatchScore: strongest
   };

@@ -1,6 +1,10 @@
 import { trustedPhilippineSources } from "../data/trustedSources.js";
 import { analyzeWithProvider } from "./providerNlpService.js";
-import { mergeClaimedAndExtractedSources, normalizeDomain } from "./sourceExtractionService.js";
+import {
+  mapDomainsToTrustedSourceNames,
+  mergeClaimedAndExtractedSources,
+  normalizeDomain
+} from "./sourceExtractionService.js";
 import { enrichClaimWithUrlContext } from "./urlContextService.js";
 import { enrichClaimWithTrustedNews } from "./newsContextService.js";
 
@@ -267,22 +271,46 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
     claimedSources: enrichedSources
   });
 
+  const newsSourceNames = mapDomainsToTrustedSourceNames(newsEnrichment.inferredSources);
+  const mergedCheckedSources = Array.from(
+    new Set([...local.sourceVerification.checkedSources, ...newsEnrichment.inferredSources, ...newsEnrichment.matchedLinks])
+  );
+  const mergedTrustedNames = Array.from(
+    new Set([...local.sourceVerification.matchedTrustedSources, ...newsSourceNames])
+  );
+  const baseWithNews = {
+    ...local,
+    sourceVerification: {
+      ...local.sourceVerification,
+      checkedSources: mergedCheckedSources,
+      matchedTrustedSources: mergedTrustedNames
+    }
+  };
+
+  const newsMatchNotes = [
+    ...newsEnrichment.notes,
+    ...newsEnrichment.matchedHeadlines.slice(0, 2).map((headline, index) => {
+      const link = newsEnrichment.matchedLinks[index];
+      return `Matched headline ${index + 1}: ${headline}${link ? ` (${link})` : ""}`;
+    })
+  ];
+
   const boostedLocal = (() => {
-    if (newsEnrichment.strongestMatchScore < 0.62) {
-      return local;
+    if (newsEnrichment.strongestMatchScore < 0.5) {
+      return baseWithNews;
     }
 
-    if (local.label === "Fake" && local.riskScore >= 0.7) {
-      return local;
+    if (baseWithNews.label === "Fake" && baseWithNews.riskScore >= 0.7) {
+      return baseWithNews;
     }
 
-    const nextConfidence = Math.max(local.confidence, 0.78);
-    const nextRiskScore = Math.min(local.riskScore, 0.33);
-    const nextFake = Math.min(local.fakeNewsLikelihood, 0.26);
-    const nextAi = Math.min(local.aiLikelihood, 0.32);
+    const nextConfidence = Math.max(baseWithNews.confidence, 0.78);
+    const nextRiskScore = Math.min(baseWithNews.riskScore, 0.33);
+    const nextFake = Math.min(baseWithNews.fakeNewsLikelihood, 0.26);
+    const nextAi = Math.min(baseWithNews.aiLikelihood, 0.32);
 
     return {
-      ...local,
+      ...baseWithNews,
       label: "Real" as const,
       mode: "Likely Real" as const,
       confidence: Number(nextConfidence.toFixed(2)),
@@ -291,17 +319,8 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
       aiLikelihood: Number(nextAi.toFixed(2)),
       humanLikelihood: Number((1 - nextAi).toFixed(2)),
       explanation:
-        local.explanation +
+        baseWithNews.explanation +
         " Trusted PH news feed matching found similar headlines, increasing confidence for a likely real claim.",
-      sourceVerification: {
-        ...local.sourceVerification,
-        matchedTrustedSources: Array.from(
-          new Set([...local.sourceVerification.matchedTrustedSources, ...newsEnrichment.inferredSources])
-        ),
-        checkedSources: Array.from(
-          new Set([...local.sourceVerification.checkedSources, ...newsEnrichment.inferredSources])
-        )
-      }
     };
   })();
 
@@ -310,7 +329,7 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
     if (!provider) {
       return {
         ...boostedLocal,
-        notes: [...newsEnrichment.notes, ...enrichment.notes, ...boostedLocal.notes]
+        notes: [...newsMatchNotes, ...enrichment.notes, ...boostedLocal.notes]
       };
     }
 
@@ -331,7 +350,7 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
         ...boostedLocal,
         notes: [
           "Provider output conflicted with strong trusted-source signals; local trusted-source decision retained.",
-          ...newsEnrichment.notes,
+          ...newsMatchNotes,
           ...boostedLocal.notes
         ]
       };
@@ -347,7 +366,7 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
       humanLikelihood: Number((1 - provider.aiLikelihood).toFixed(2)),
       explanation: provider.explanation,
       notes: [
-        ...newsEnrichment.notes,
+        ...newsMatchNotes,
         ...enrichment.notes,
         `Primary inference provider: ${provider.provider}`,
         ...boostedLocal.notes
@@ -356,7 +375,7 @@ export async function analyzeClaimWithProvider(input: AnalyzeInput): Promise<Ana
   } catch {
     return {
       ...boostedLocal,
-      notes: [...newsEnrichment.notes, ...enrichment.notes, ...boostedLocal.notes]
+      notes: [...newsMatchNotes, ...enrichment.notes, ...boostedLocal.notes]
     };
   }
 }

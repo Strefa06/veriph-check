@@ -46,6 +46,15 @@ const MIN_MATCH_SCORE_STRONG = 0.5;
 const MIN_MATCH_SCORE_WEAK = 0.35;
 const MIN_MATCH_SCORE_PARTIAL = 0.3;
 
+const trustedDomainAliases: Record<string, string> = {
+  "abs-cbnnews.com": "news.abs-cbn.com",
+  "www.abs-cbnnews.com": "news.abs-cbn.com",
+  "www.gmanetwork.com": "gmanetwork.com",
+  "www.gmanews.tv": "gmanews.tv",
+  "www.inquirer.net": "inquirer.net",
+  "www.rappler.com": "rappler.com"
+};
+
 function decodeEntities(value: string): string {
   return value
     .replace(/&amp;/g, "&")
@@ -67,6 +76,14 @@ function normalizeText(value: string): string {
     .replace(/[^a-z0-9\s]/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeDomainForTrust(domain: string): string {
+  const normalized = normalizeDomain(domain);
+  if (trustedDomainAliases[normalized]) {
+    return trustedDomainAliases[normalized];
+  }
+  return normalized;
 }
 
 function tokenize(value: string): string[] {
@@ -171,7 +188,7 @@ function buildSearchQuery(claim: string): string {
 }
 
 function getTrustedSourceByDomain(domain: string) {
-  const normalized = normalizeDomain(domain);
+  const normalized = normalizeDomainForTrust(domain);
   return trustedPhilippineSources.find(
     (source) => normalized === source.domain || normalized.endsWith(`.${source.domain}`)
   );
@@ -337,7 +354,7 @@ function mapToNewsMatches(items: RawNewsItem[], claim: string): NewsMatch[] {
   const matches: NewsMatch[] = [];
 
   for (const item of items) {
-    const domain = normalizeDomain(item.url);
+    const domain = normalizeDomainForTrust(item.url);
     const trusted = getTrustedSourceByDomain(domain);
     const similarity = jaccardSimilarity(claim, item.title);
     if (similarity < MIN_MATCH_SCORE_PARTIAL) continue;
